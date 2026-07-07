@@ -42,7 +42,7 @@ window.hermesDesktop = {
 
 import './../styles.css'
 
-import { StrictMode, useState } from 'react'
+import { StrictMode, useState, useEffect } from 'react'
 // ── React app ───────────────────────────────────────────────────────────
 import { createRoot } from 'react-dom/client'
 
@@ -59,10 +59,35 @@ const NAV_ITEMS: { id: View; label: string }[] = [
   { id: 'cp', label: 'Control Plane' },
 ]
 
+const GATEWAY_URL = import.meta.env.VITE_GATEWAY_URL || 'http://localhost:8530'
+const HINDSIGHT_URL = import.meta.env.VITE_HINDSIGHT_URL || 'http://localhost:9885'
+const LEDGER = import.meta.env.VITE_REMOTE_LEDGER_PATH || '/teamspace/studios/this_studio/af-sandbox/.alphaforge/orchestrator'
+
+async function fetchState(): Promise<Record<string, unknown>> {
+  try {
+    const h = await fetch(`${GATEWAY_URL}/health`, { signal: AbortSignal.timeout(5000) })
+    if (!h.ok) throw new Error('gateway down')
+    return { connected: true }
+  } catch {
+    return { connected: false }
+  }
+}
+
 function StandaloneApp() {
   const [view, setView] = useState<View>('mc')
+  const [remoteData, setRemoteData] = useState<MissionControlData | null>(null)
 
-  const mcData: MissionControlData = {
+  useEffect(() => {
+    fetchState().then(s => {
+      if (s.connected) {
+        console.info('[MissionControl] Connected to remote Gateway')
+      } else {
+        console.warn('[MissionControl] Remote unreachable, using sample data')
+      }
+    })
+  }, [])
+
+  const mcData: MissionControlData = remoteData || {
     tick: SAMPLE_TICK,
     workers: SAMPLE_WORKERS,
     gates: SAMPLE_GATES,
