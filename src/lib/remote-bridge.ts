@@ -1,196 +1,186 @@
-import { readDesktopFileText } from '@/lib/desktop-fs'
+/**
+ * RemoteBridge — AlphaForge ledger access via Gateway API + local fallback
+ *
+ * When SSH tunnel is active (bash deploy/tunnel.sh), connects to the remote
+ * Gateway API (localhost:8530) for all ledger operations.
+ * Falls back to local desktop-fs when offline.
+ */
+
+import { readDesktopFileText, isDesktopFsRemoteMode } from '@/lib/desktop-fs'
+import { getLedgerPath, setLedgerPath } from '@/lib/ledger-reader'
+
+// ── Types ────────────────────────────────────────────────────────────────────
+
+export interface FileEntry {
+  name: string
+  path: string
+  isDirectory: boolean
+  size: number
+  modifiedAt: string
+}
+
+export interface GatewayStatus {
+  pid: number
+  version: string
+  uptime: string
+}
+
+// ── Configuration ────────────────────────────────────────────────────────────
+
+const DEFAULT_GATEWAY_URL = 'http://localhost:8530'
+const DEFAULT_HINDSIGHT_URL = 'http://localhost:9885'
+
+let gatewayUrl: string = process.env.GATEWAY_URL || DEFAULT_GATEWAY_URL
+let hindsightUrl: string = process.env.REMOTE_HINDSIGHT_URL || DEFAULT_HINDSIGHT_URL
+
+export function setGatewayUrl(url: string) { gatewayUrl = url }
+export function setHindsightUrl(url: string) { hindsightUrl = url }
 
 // ── RemoteBridge ─────────────────────────────────────────────────────────────
-//
-// Provides access to AlphaForge ledger files. When SSH_HOST env vars are
-// configured, the bridge can tunnel to a remote server (SSH integration TBD).
-// By default, reads from the local filesystem via the desktop bridge.
-//
-// Future: replace the local fallback with actual SSH (ssh2 or exec ssh command)
-// when REMOTE_SSH_HOST and REMOTE_LEDGER_PATH are set.
-
-const DEFAULT_LOCAL_PATH = '~/.hermes/alphaforge'
 
 export class RemoteBridge {
   private _connected = false
-  private _sshHost: string | null = null
-  private _remoteLedgerPath: string | null = null
-  private _localLedgerPath: string
-
-  constructor(localLedgerPath?: string) {
-    this._localLedgerPath = localLedgerPath || DEFAULT_LOCAL_PATH
-  }
 
   /**
-   * Connect to a remote SSH host. When SSH_HOST env is unset, this sets up
-   * local-only mode (no-op connect).
-   *
-   * @param sshHost  SSH host string (user@hostname or hostname)
-   * @param ledgerPath  Remote ledger path
+   * Connect to the remote server via SSH tunnel.
+   * Requires `bash deploy/tunnel.sh` running in another terminal.
+   * Validates by pinging the Gateway health endpoint.
    */
-  async connect(
-    sshHost: string,
-    ledgerPath: string,
-  ): Promise<void> {
-    this._sshHost = sshHost
-    this._remoteLedgerPath = ledgerPath
-    this._connected = true
-    console.info(
-      `[remote-bridge] Connected to ${sshHost}:${ledgerPath}`,
-    )
-  }
+  async connect(): Promise<void> {
+    if (this._connected) return
 
-  /**
-   * Disconnect the SSH tunnel (or reset local mode).
-   */
-  disconnect(): void {
-    this._sshHost = null
-    this._remoteLedgerPath = null
-    this._connected = false
-  }
-
-  /**
-   * Whether the bridge is in connected state.
-   */
-  isConnected(): boolean {
-    return this._connected
-  }
-
-  /**
-   * Read a file relative to the ledger path.
-   * In local-only mode, reads via the desktop bridge.
-   * In SSH mode (future), reads via a remote SSH command.
-   *
-   * @param relativePath  Path relative to ledger base (e.g. "control.yaml")
-   * @returns File contents as string, or null on error / ENOENT
-   */
-  async readFile(relativePath: string): Promise<string | null> {
-    // ── Check env for SSH configuration ──────────────────────────────
-    const envSshHost =
-      process.env.REMOTE_SSH_HOST || this._sshHost
-
-    const envRemotePath =
-      process.env.REMOTE_LEDGER_PATH || this._remoteLedgerPath
-
-    if (envSshHost && envRemotePath) {
-      // ── SSH mode (stub for future) ─────────────────────────────────
-      try {
-        return await this.readRemoteViaSsh(
-          envSshHost,
-          envRemotePath,
-          relativePath,
-        )
-      } catch (err) {
-        console.warn(
-          '[remote-bridge] SSH read failed, falling back to local:',
-          err,
-        )
-
-        return this.readLocal(relativePath)
-      }
+    if (!isDesktopFsRemoteMode()) {
+      // Local mode — no-op
+      this._connected = true
+      return
     }
 
-    // ── Local mode (default) ─────────────────────────────────────────
-    return this.readLocal(relativePath)
-  }
-
-  /**
-   * Resolve the local ledger path with ~/ expansion.
-   */
-  private localPath(relativePath: string): string {
-    const home =
-      process.env.HOME || process.env.USERPROFILE || '~'
-
-    const base = this._localLedgerPath.replace(/^~/, home)
-
-    return `${base}/${relativePath}`
-  }
-
-  /**
-   * Read a file from the local filesystem via the desktop bridge.
-   */
-  private async readLocal(
-    relativePath: string,
-  ): Promise<string | null> {
+    // Remote mode: ping Gateway
     try {
-      const result = await readDesktopFileText(
-        this.localPath(relativePath),
-      )
-
-      if (result.binary) {
-        console.warn(
-          `[remote-bridge] ${relativePath} is binary, skipping`,
-        )
-
-        return null
-      }
-
-      return result.text
+      const res = await fetch(`${gatewayUrl}/health`, { signal: AbortSignal.timeout(5000) })
+      if (!res.ok) throw new Error(`Gateway returned ${res.status}`)
+      const data: GatewayStatus = await res.json()
+      console.info(`[RemoteBridge] Connected to Gateway PID ${data.pid}`)
+      this._connected = true
     } catch (err) {
-      console.warn(
-        `[remote-bridge] Error reading local ${relativePath}:`,
-        err,
+      console.warn('[RemoteBridge] Cannot reach Gateway. Is SSH tunnel running?', err)
+      throw new Error(
+        'Cannot connect to remote Gateway. Start tunnel:\n  bash deploy/tunnel.sh',
       )
+    }
+  }
 
+  isConnected(): boolean { return this._connected }
+
+  disconnect(): void { this._connected = false }
+
+  // ── File Operations ────────────────────────────────────────────────────
+
+  /** Read a file from the ledger (local or remote via Gateway) */
+  async readFile(relativePath: string): Promise<string | null> {
+    this.ensureConnected()
+    const fullPath = `${getLedgerPath()}/${relativePath}`
+    try {
+      const result = await readDesktopFileText(fullPath)
+      if (result.binary) return null
+      return result.text
+    } catch {
       return null
     }
   }
 
-  /**
-   * Read a file via SSH (stub). Replace this with ssh2 or exec ssh when
-   * implementing remote ledger access.
-   */
-  private async readRemoteViaSsh(
-    _sshHost: string,
-    _remotePath: string,
-    _relativePath: string,
-  ): Promise<string | null> {
-    // TODO: Implement SSH file read using ssh2 or child_process.exec
-    throw new Error('SSH remote read not yet implemented')
+  /** Check if a file exists */
+  async exists(relativePath: string): Promise<boolean> {
+    const content = await this.readFile(relativePath)
+    return content !== null
   }
-}
 
-// ── Convenience singleton ────────────────────────────────────────────────────
+  /** Write a file to the ledger (only in local mode) */
+  async writeFile(relativePath: string, content: string): Promise<void> {
+    this.ensureConnected()
+    // Use the existing write mechanism
+    const { writeFileText } = await import('@/lib/desktop-fs')
+    const fullPath = `${getLedgerPath()}/${relativePath}`
+    await writeFileText(fullPath, content)
+  }
 
-let defaultBridge: RemoteBridge | null = null
+  // ── Gateway API ───────────────────────────────────────────────────────
 
-/**
- * Get or create the default bridge using env-based config.
- *
- * If REMOTE_SSH_HOST is set, the bridge will attempt remote reads.
- * Otherwise it operates in local-only mode.
- */
-export function getDefaultBridge(): RemoteBridge {
-  if (!defaultBridge) {
-    defaultBridge = new RemoteBridge()
+  /** Ping the Gateway health endpoint */
+  async health(): Promise<GatewayStatus> {
+    const res = await fetch(`${gatewayUrl}/health`)
+    if (!res.ok) throw new Error(`Health check failed: ${res.status}`)
+    return res.json()
+  }
 
-    const sshHost = process.env.REMOTE_SSH_HOST
-    const remotePath = process.env.REMOTE_LEDGER_PATH
+  /** Call Gateway RPC method */
+  async rpc(method: string, params?: unknown): Promise<unknown> {
+    const res = await fetch(`${gatewayUrl}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params: params || {} }),
+    })
+    if (!res.ok) throw new Error(`Gateway RPC error: ${res.status}`)
+    const data = await res.json()
+    if (data.error) throw new Error(`RPC error: ${data.error.message || JSON.stringify(data.error)}`)
+    return data.result
+  }
 
-    if (sshHost && remotePath) {
-      // Fire-and-forget connect; failures fall back to local reads.
-      defaultBridge.connect(sshHost, remotePath).catch(() => {
-        console.warn(
-          '[remote-bridge] Default bridge connect failed, using local fallback',
-        )
-      })
-    } else {
-      // Mark as connected in local-only mode
-      defaultBridge.connect('local', DEFAULT_LOCAL_PATH).catch(() => {
-        /* no-op */
-      })
+  // ── Hindsight API ──────────────────────────────────────────────────────
+
+  /** Recall memories from Hindsight */
+  async recall(query: string): Promise<Array<{ id: string; content: string; score: number }>> {
+    try {
+      const res = await fetch(`${hindsightUrl}/recall?q=${encodeURIComponent(query)}`)
+      if (!res.ok) return []
+      return await res.json()
+    } catch { return [] }
+  }
+
+  /** Reflect via Hindsight */
+  async reflect(question: string): Promise<string | null> {
+    try {
+      const res = await fetch(`${hindsightUrl}/reflect?q=${encodeURIComponent(question)}`)
+      if (!res.ok) return null
+      return (await res.json()).answer || null
+    } catch { return null }
+  }
+
+  // ── High-Level ─────────────────────────────────────────────────────────
+
+  /** Get control.yaml mode */
+  async getMode(): Promise<string> {
+    const content = await this.readFile('control.yaml')
+    if (!content) return 'unknown'
+    const m = content.match(/^mode:\s*(\S+)/m)
+    return m ? m[1] : 'unknown'
+  }
+
+  /** Get state.json */
+  async getState(): Promise<Record<string, unknown>> {
+    const content = await this.readFile('state.json')
+    if (!content) return {}
+    try { return JSON.parse(content) }
+    catch { return {} }
+  }
+
+  /** Get list of hypotheses */
+  async listHypotheses(): Promise<string[]> {
+    const dir = await this.readFile('hypotheses')
+    if (!dir) return []
+    // Parse the directory listing
+    return dir.split('\n').filter(l => l.endsWith('.yaml'))
+  }
+
+  // ── Private Helpers ────────────────────────────────────────────────────
+
+  private ensureConnected(): void {
+    if (!this._connected) {
+      throw new Error('RemoteBridge: call connect() first')
     }
   }
-
-  return defaultBridge
 }
 
-/**
- * Reset the default bridge (useful for testing or config changes).
- */
-export function resetDefaultBridge(): void {
-  if (defaultBridge) {
-    defaultBridge.disconnect()
-    defaultBridge = null
-  }
-}
+// ── Singleton ────────────────────────────────────────────────────────────────
+
+export const bridge = new RemoteBridge()
