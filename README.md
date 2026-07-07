@@ -27,9 +27,9 @@ hermes-pack/
 
 ---
 
-## Praxis Evidence Gate
+## Praxis Truth Kernel Integration
 
-Praxis is the **deterministic verification kernel** that sits between worker output and LLM-based gates (T1/T2/T3/T4). It is a reusable, schema-driven system that validates every worker submission before any expensive model runs.
+Hermes Pack integrates with the **[Praxis Truth Kernel](https://github.com/ddawnlll/praxis)** (`ddawnlll/praxis`) — an independent, deterministic verification layer for agent outputs. Praxis is **not** reimplemented here; it lives in its own repo and is called as a CLI tool via `tools/praxis-bridge.sh`.
 
 ### Architecture
 
@@ -37,113 +37,54 @@ Praxis is the **deterministic verification kernel** that sits between worker out
 Worker produces evidence bundle
         │
         ▼
-┌───────────────────────────────┐
-│  Praxis T0 Gate (script)      │  ◄── No LLM, deterministic only
-│  • Schema validation          │
-│  • Forbidden path check       │
-│  • Memory write prevention    │
-│  • Data lineage integrity     │
-│  • Negative control check     │
-│  • Metrics sanity bounds      │
-│  • Branch push verification   │
-│  • Budget compliance          │
-└───────┬───────────────────────┘
+┌──────────────────────────────────┐
+│  praxis verify --plan planspec   │  ◄── 6 deterministic gates
+│  • SchemaGate  — evidence format │       (NO LLM involved)
+│  • LockGate    — plan integrity  │
+│  • EvidenceGate — claims backed? │
+│  • WiringGate  — contracts kept? │
+│  • ExecGate    — tests actually  │
+│                  ran?            │
+│  • FinalGate   — criteria met?   │
+└───────┬──────────────────────────┘
         │
-    PASS/FAIL
+    PASS/HOLD/FAIL
         │
     ┌───┴───┐
-    │       │
-  FAIL    PASS
-    │       │
-    ▼       ▼
+  FAIL     PASS/HOLD
+    │        │
+    ▼        ▼
 Reject   Proceed to T1/T2/T3/T4
 (no LLM)  (evidence-informed LLM gates)
 ```
 
-### Key Principles
+### Integration Points
 
-| Principle | Rule |
-|-----------|------|
-| **Fail-closed** | Any check error → FAIL. Never pass silently. |
-| **No evidence, no claim** | Every claim must cite file+line or test output. |
-| **No context, no write** | Required context must be read before files are changed. |
-| **No memory by workers** | Only orchestrator + gate verdict writes canonical memory. |
-| **Schema-first** | All artifacts have JSON schemas. Malformed = rejected. |
+| Hermes Pack | Praxis Repo | Purpose |
+|-------------|-------------|---------|
+| `tools/praxis/` (submodule) | `ddawnlll/praxis` | Full Truth Kernel, CLI, plugin |
+| `tools/praxis-bridge.sh` | — | Thin wrapper calling `praxis verify` |
+| `adapters/*/project.yaml → praxis:` block | — | Adapter-level Praxis configuration |
 
-### Praxis File Structure
+### Key Rules
 
-```
-templates/praxis/
-  praxis-verify.sh           # Main gate orchestrator (runs all checks)
-  schemas/
-    task_contract.schema.json     # What a task requires
-    context_capsule.schema.json   # Bounded context package for workers
-    evidence_bundle.schema.json   # Worker output format
-    gate_result.schema.json       # Gate verdict format
-  checks/
-    check_schema.py               # Evidence bundle schema validation
-    check_paths.py                # Forbidden path enforcement
-    check_control.sh              # Control.yaml mode check
-    check_branch.py               # Branch pushed to remote
-    check_lineage.py              # Data lineage/OOS integrity
-    check_negative_control.py     # Negative control requirement
-    check_memory.py               # Memory write prevention
-    check_budget.py               # Budget/speed compliance
-    check_metrics.py              # Metric sanity bounds
-  prompts/
-    orchestrator_tick.md          # Expanded tick prompt with Praxis flow
-    worker_task.md                # Context-capsule-aware worker prompt
-    proposer.md                   # T1 evidence-based verdict
-    challenger.md                 # T2 adversarial audit
-    arbiter.md                    # T3 binding judge
-```
+- **Praxis before T1.** No LLM gate runs before deterministic verification.
+- **No evidence = no claim.** Worker output without evidence is invalid.
+- **Workers don't write memory.** Only orchestrator after Praxis PASS + gate verdict.
+- **Merge policy:** PR-only, never direct.
 
-### Adapter Configuration
-
-Each adapter's `project.yaml` includes a `praxis:` block:
-
-```yaml
-praxis:
-  enabled: true
-  fail_closed: true
-  required_artifacts:
-    - evidence_bundle.json
-    - diff.patch
-    - test_output.txt
-  schemas:
-    evidence_bundle: ".alphaforge/orchestrator/schemas/evidence_bundle.schema.json"
-  memory_policy:
-    workers_can_write_memory: false
-    retain_only_after_gate: true
-  gates:
-    t1: { enabled: true, model_profile: "af-orchestrator" }
-    t2: { enabled: true, model_profile: "af-challenger", read_only: true, blind: true }
-    t3: { enabled: true, model_profile: "af-arbiter", on_disagreement_only: true }
-    t4: { enabled: true, trigger_on: ["constitutional_change", "critical_risk"] }
-  risk_based_gating:
-    low:    { gates: ["T1"] }
-    medium: { gates: ["T1", "T2"], confirm_required: true }
-    high:   { gates: ["T1", "T2", "T3"], negative_control_required: true }
-    critical: { gates: ["T1", "T2", "T3", "T4"], human_always: true }
-```
-
-### Tick Flow with Praxis
+### Flow
 
 ```
-[Pre-Tick Gate] control.yaml mode? activity?
-        │
-        ▼
-[Orchestrator Wakes]
-  1. Read control.yaml + current_state.md
-  2. Check pending evidence bundles
-  3. Run Praxis on any unverified bundles
-  4. For PASS: run T1 → (T2) → (T3) → (T4) gate pipeline
-  5. For FAIL: reject without LLM, update hypothesis
-  6. If capacity: build context capsule → dispatch worker
-  7. Write report, retain verified memory only
+cron tick → pre_tick_gate.sh → orchestrator wakes
+  → dispatch worker (context capsule)
+  → worker produces evidence
+  → praxis verify (6 gates, deterministic)
+  → T1 Proposer → T2 Challenger → T3 Arbiter → T4 Human
+  → PR / reject / memory retain
 ```
 
----
+See [`ddawnlll/praxis`](https://github.com/ddawnlll/praxis) for full Truth Kernel documentation.
 
 ## How it works (orchestrator mode)
 

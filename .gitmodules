@@ -1,0 +1,6 @@
+[submodule "praxis"]
+	path = tools/praxis
+	url = https://github.com/ddawnlll/praxis.git
+[submodule "tools/praxis"]
+	path = tools/praxis
+	url = https://github.com/ddawnlll/praxis.git
