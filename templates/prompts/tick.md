@@ -68,9 +68,10 @@ After Praxis PASS:
 
 ### Phase 5: Dispatch New Work
 If capacity available:
-1. Select highest-priority hypothesis
-2. Create Context Capsule (allowed paths, required context, acceptance criteria)
-3. Dispatch worker on isolated branch
+1. **Check scar-tissue memory first** — query Hindsight for `type: refuted_hypothesis` records with similar keywords. Do NOT re-dispatch a hypothesis that has been previously refuted (issue #23).
+2. Select highest-priority hypothesis
+3. Create Context Capsule (allowed paths, required context, acceptance criteria)
+4. Dispatch worker on isolated branch
 
 ## Hard Rules
 - **Praxis before T1.** No LLM gate runs before deterministic verification.
