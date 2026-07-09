@@ -1,0 +1,40 @@
+# Profile: Explorer — idle-tethered divergence feeder (Janus forward face).
+# When the system is idle (no hypotheses to test), the Explorer generates
+# divergent hypotheses to explore new territory rather than exploiting existing
+# paths.
+#
+# Dependency: Scar-tissue memory (redteam/objections.jsonl) — refuted ideas
+# inform where NOT to explore.
+schema_version: 1
+profile_name: explorer
+
+# Temperature for divergence sampling. Higher values produce more surprising
+# (but potentially lower-quality) hypothesis directions.
+divergence_temp: 1.2
+
+# Multiplier applied to the probability of exploring directions related to
+# refuted hypotheses. 1.0 = no penalty, 0.0 = never revisit a refuted family.
+# The Explorer reads scar-tissue (objections.jsonl) and down-weights any
+# source_type or topic whose objection_id appears with a BLOCK stance.
+refuted_penalty: 0.5
+
+# Percentage of total compute (time / spend) the Explorer may consume when
+# idle. Measured as a fraction of the per-tick budget. The orchestrator
+# enforces this ceiling.
+exploration_budget_pct: 20
+
+# Allowed generation strategies. The Explorer selects from these source types
+# when synthesizing a new hypothesis.
+#   cross_project:   mine patterns from sibling projects in the registry
+#   codebase_scan:   static analysis of the project codebase for hotspots
+#   random_mutation: randomly mutate the highest-openness hypothesis
+#   adjoint_variant: derive the adjoint / complement of a recent hypothesis
+source_types:
+  - cross_project
+  - codebase_scan
+  - random_mutation
+  - adjoint_variant
+
+# Idle trigger: when the number of open hypotheses falls below this threshold,
+# the Explorer activates. Set to 0 to disable autonomous exploration.
+idle_trigger_hypotheses: 3
