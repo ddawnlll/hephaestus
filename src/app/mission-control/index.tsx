@@ -1,10 +1,14 @@
 import { PAGE_INSET_X, PAGE_MAX_W } from '@/app/layout-constants'
+import { LiveBadge } from '@/components/ui/live-badge'
+import { StatusDot } from '@/components/ui/status-dot'
 import { cn } from '@/lib/utils'
 
+import { ApprovalQueue, type ApprovalItem } from './approval-queue'
 import { BudgetBar } from './budget-bar'
 import { GateFlow, type GateStats } from './gate-flow'
 import { LiveTicker, type TickerEvent } from './live-ticker'
 import { type TickReport, TickSummary } from './tick-summary'
+import { WorkerControls, type WorkerControlInfo } from './worker-controls'
 import { type WorkerInfo, WorkerStatus } from './worker-status'
 
 export interface MissionControlData {
@@ -14,7 +18,11 @@ export interface MissionControlData {
   events?: TickerEvent[]
   budgetSpent?: number
   budgetTotal?: number
+  approvals?: ApprovalItem[]
   loading?: boolean
+  onApprove?: (id: string, rationale: string) => void
+  onReject?: (id: string, rationale: string) => void
+  onStopWorker?: (workerId: string, force: boolean) => void
 }
 
 const EMPTY_GATES: GateStats = {
@@ -31,13 +39,26 @@ export function MissionControlView({
   events = [],
   budgetSpent = 0,
   budgetTotal = 25,
+  approvals = [],
   loading = true,
+  onApprove,
+  onReject,
+  onStopWorker,
 }: MissionControlData = {}) {
   const connectionText = loading
-    ? 'waiting for ledger…'
+    ? 'waiting for ledger...'
     : tick
-      ? `tick ${tick.tick_number} · live`
+      ? `tick ${tick.tick_number} . live`
       : 'no data'
+
+  const statusDot = loading ? 'warning' : tick ? 'active' : 'warning'
+
+  // Map WorkerInfo to WorkerControlInfo for stop controls
+  const controlWorkers: WorkerControlInfo[] = workers.map(w => ({
+    id: w.id,
+    name: w.name,
+    status: w.status,
+  }))
 
   return (
     <div className={cn('flex h-full flex-col overflow-y-auto', PAGE_INSET_X)}>
@@ -48,21 +69,16 @@ export function MissionControlView({
             <h1 className="text-xl font-semibold tracking-tight">Mission Control</h1>
             <p className="mt-1 text-sm text-muted-foreground">AlphaForge orchestrator dashboard</p>
           </div>
-          <div
-            className={cn(
-              'flex items-center gap-2 text-xs',
-              loading ? 'text-muted-foreground' : tick ? 'text-emerald-500' : 'text-yellow-500',
-            )}
-          >
-            <span
-              className={cn(
-                'inline-block size-1.5 rounded-full',
-                loading ? 'bg-yellow-500' : tick ? 'bg-emerald-500' : 'bg-yellow-500',
-              )}
-            />
-            <span>{connectionText}</span>
-          </div>
+          <LiveBadge pulse={!loading && !!tick} variant={loading ? 'warning' : tick ? 'success' : 'warning'}>
+            <StatusDot pulse={!loading && !!tick} status={statusDot} />
+            {connectionText}
+          </LiveBadge>
         </div>
+
+        {/* Worker stop controls */}
+        {!loading && (
+          <WorkerControls workers={controlWorkers} onStop={onStopWorker} />
+        )}
 
         {/* Top row: tick summary + budget + workers */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -70,6 +86,14 @@ export function MissionControlView({
           <BudgetBar loading={loading} spent={budgetSpent} total={budgetTotal} />
           <WorkerStatus loading={loading} workers={workers} />
         </div>
+
+        {/* Approval Queue (T4 Human Gate) */}
+        <ApprovalQueue
+          items={approvals}
+          loading={loading}
+          onApprove={onApprove}
+          onReject={onReject}
+        />
 
         {/* Middle: gate flow */}
         <GateFlow gates={gates} loading={loading} />
