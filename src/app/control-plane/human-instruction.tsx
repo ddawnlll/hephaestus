@@ -44,7 +44,7 @@ export function HumanInstructionEditor({
       />
 
       <div className="flex items-center gap-2">
-        <Button onClick={() => console.log('Save instruction:', instruction)} size="sm" variant="default">
+        <Button onClick={() => onChange(instruction)} size="sm" variant="default">
           <Codicon name="save" size="0.875rem" />
           Save
         </Button>

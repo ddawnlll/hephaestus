@@ -1,4 +1,4 @@
-import { readDesktopFileText } from '@/lib/desktop-fs'
+import { readDesktopFileText, writeDesktopFileText } from '@/lib/desktop-fs'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -39,7 +39,12 @@ export interface HypothesisDoc {
 
 // ── State ────────────────────────────────────────────────────────────────────
 
-let ledgerBasePath = '~/.hermes/alphaforge'
+// Ledger path: prefer VITE_LEDGER_PATH env var, fall back to default.
+// Set VITE_LEDGER_PATH in apps/desktop/.env or via Control Plane.
+let ledgerBasePath: string =
+  (typeof window !== 'undefined' && (window as any).__ENV__?.VITE_LEDGER_PATH) ||
+  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_LEDGER_PATH) ||
+  '~/.hermes/alphaforge'
 
 /** Set the ledger base path (e.g. for testing or custom installs). */
 export function setLedgerPath(path: string): void {
@@ -297,4 +302,23 @@ interface NodeError extends Error {
 
 function isNodeError(err: unknown): err is NodeError {
   return err instanceof Error && 'code' in err
+}
+
+// ── Writers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Serialize ControlConfig to YAML and write control.yaml to the ledger directory.
+ */
+export async function writeControlYaml(config: ControlConfig): Promise<void> {
+  const lines = [
+    `mode: ${config.mode}`,
+    `budget_usd: ${config.budget_usd}`,
+    `parallel_workers: ${config.parallel_workers}`,
+    `human_instruction: "${(config.human_instruction || '').replace(/"/g, '\\"')}"`,
+    `allowed_paths:`,
+    ...config.allowed_paths.map(p => `  - "${p}"`),
+    `forbidden_paths:`,
+    ...config.forbidden_paths.map(p => `  - "${p}"`),
+  ]
+  await writeDesktopFileText(ledgerPath('control.yaml'), lines.join('\n'))
 }
