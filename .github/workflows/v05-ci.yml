@@ -24,9 +24,15 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with: { bun-version: latest }
       - name: Bootstrap TS dry-run
-        run: mkdir -p /tmp/hep-ci && cd /tmp/hep-ci && git init -q && mkdir -p src && echo "print(1)" > src/main.py && bun bootstrap.ts /tmp/hep-ci --adapter v7-alphaforge --dry-run
+        run: |
+          mkdir -p /tmp/hep-ci && cd /tmp/hep-ci && git init -q && mkdir -p src
+          echo "print(1)" > src/main.py
+          bun "$GITHUB_WORKSPACE/bootstrap.ts" /tmp/hep-ci --adapter v7-alphaforge --dry-run
       - name: Bootstrap bash dry-run
-        run: mkdir -p /tmp/hep-bash && cd /tmp/hep-bash && git init -q && mkdir -p src && echo "print(1)" > src/main.py && bash bootstrap.sh --dry-run /tmp/hep-bash --adapter v7-alphaforge
+        run: |
+          mkdir -p /tmp/hep-bash && cd /tmp/hep-bash && git init -q && mkdir -p src
+          echo "print(1)" > src/main.py
+          bash "$GITHUB_WORKSPACE/bootstrap.sh" --dry-run /tmp/hep-bash --adapter v7-alphaforge
       - name: Schema + Phase 0 tests
         run: |
           python3 schema/tests/test_schema_validation.py

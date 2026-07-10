@@ -195,7 +195,7 @@ def cmd_set(state_file, feature_name, value_str):
                                 "readiness-check.py")
         if os.path.exists(rc_path):
             r = subprocess.run([sys.executable, rc_path, state_file,
-                               os.path.join(os.path.dirname(os.path.dirname(state_file)), "beliefs.yaml")],
+                               os.path.join(os.path.dirname(state_file), "beliefs.yaml")],
                                capture_output=True, text=True, timeout=30)
             if r.returncode != 0:
                 print(json.dumps({"error": "Readiness check failed: reflector=active not allowed",

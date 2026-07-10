@@ -3,7 +3,9 @@
 tick-runtime.py — Deterministic tick orchestration wrapper (#71)
 
 Owns journal phase transitions, invokes deterministic gates.
-Recovers existing interrupted journals — does NOT create new ones blindly.
+ONLY resumes INTERRUPTED journals (not completed ones).
+Corrupt journals → FAIL CLOSED.
+Side effects + operation keys → journal-gated.
 """
 
 import json, os, sys, uuid, subprocess
@@ -18,7 +20,7 @@ def _tj(*a):
     if p.stdout.strip():
         try: out = json.loads(p.stdout)
         except: out = {"raw": p.stdout}
-    return p.returncode, out, p.stderr
+    return p.returncode, out
 
 def _atomic_write(path, data):
     tmp = path + ".tmp." + uuid.uuid4().hex[:8]
@@ -26,40 +28,57 @@ def _atomic_write(path, data):
     os.rename(tmp, path)
 
 def init_tick(state_file, journal_dir):
-    """Initialize or RECOVER existing tick journal."""
     os.makedirs(journal_dir, exist_ok=True)
 
-    # Look for EXISTING journals first
-    existing = [f for f in os.listdir(journal_dir) if f.endswith(".journal.json")]
-    existing.sort(reverse=True)
+    # Look for EXISTING journals
+    existing = sorted([f for f in os.listdir(journal_dir) if f.endswith(".journal.json")], reverse=True)
 
-    tick_id = None
     if existing:
-        # Load latest existing journal — recover it
-        latest_jf = os.path.join(journal_dir, existing[0])
+        jf = os.path.join(journal_dir, existing[0])
         try:
-            with open(latest_jf) as f: j = json.load(f)
-            tick_id = j.get("tick_id")
-            if tick_id:
-                rc, out, _ = _tj("integrity", journal_dir)
-                if out.get("integrity_ok") == False:
-                    pass  # log but try recovery anyway
-                rc2, out2, _ = _tj("recover", journal_dir)
-                # Continue with existing journal
-                run_id = out2.get("run_id") or j.get("run_id")
-                _tj("start-phase", journal_dir, "tick_resume")
-                with open(state_file) as f: state = json.load(f)
-                state["tick"] = state.get("tick", 0) + 1
-                state["run_id"] = run_id
-                state["phase"] = "running"
-                _atomic_write(state_file, state)
-                return {"tick_id": tick_id, "run_id": run_id, "phase": "running", "recovered": True}
+            with open(jf) as f: j = json.load(f)
         except (json.JSONDecodeError, IOError):
-            pass  # Corrupted journal — create new
+            return {"error": f"Cannot parse existing journal: {existing[0]}"}
+
+        # Integrity check — fail closed if corrupt
+        _, out = _tj("integrity", journal_dir)
+        if out.get("integrity_ok") == False:
+            return {"error": f"Journal integrity FAILED: {out.get('issues', 'unknown')}"}
+
+        # Only resume if journal was INTERRUPTED (has running phase)
+        phases = j.get("phases", [])
+        running_phases = [p for p in phases if p.get("status") == "running" or p.get("status") == "crashed"]
+        completed_phases = [p for p in phases if p.get("status") == "completed"]
+
+        if not running_phases and completed_phases:
+            # All phases completed — this is a DONE tick. Create NEW journal.
+            tick_id = f"TICK-{uuid.uuid4().hex[:12].upper()}"
+            _tj("init", journal_dir, tick_id)
+            _, out2 = _tj("status", journal_dir)
+            run_id = out2.get("run_id", tick_id)
+            _tj("start-phase", journal_dir, "tick_start")
+            with open(state_file) as f: state = json.load(f)
+            state["tick"] = state.get("tick", 0) + 1
+            state["run_id"] = run_id
+            state["phase"] = "running"
+            _atomic_write(state_file, state)
+            return {"tick_id": tick_id, "run_id": run_id, "phase": "running", "recovered": False}
+
+        # Has running phases — it's interrupted, recover it
+        _, out2 = _tj("recover", journal_dir)
+        run_id = out2.get("run_id") or j.get("run_id")
+        _tj("start-phase", journal_dir, "tick_resume")
+        with open(state_file) as f: state = json.load(f)
+        state["tick"] = state.get("tick", 0) + 1
+        state["run_id"] = run_id
+        state["phase"] = "running"
+        _atomic_write(state_file, state)
+        return {"tick_id": j.get("tick_id"), "run_id": run_id, "phase": "running", "recovered": True}
 
     # No existing journal — create fresh
     tick_id = f"TICK-{uuid.uuid4().hex[:12].upper()}"
-    rc, out, _ = _tj("init", journal_dir, tick_id)
+    _tj("init", journal_dir, tick_id)
+    _, out = _tj("status", journal_dir)
     run_id = out.get("run_id", tick_id)
     _tj("start-phase", journal_dir, "tick_start")
     with open(state_file) as f: state = json.load(f)
@@ -71,7 +90,7 @@ def init_tick(state_file, journal_dir):
 
 def can_dispatch(state_file, journal_dir, worker_id):
     op_key = f"dispatch:{worker_id}"
-    _, out, _ = _tj("already-applied", journal_dir, op_key)
+    _, out = _tj("already-applied", journal_dir, op_key)
     if out.get("applied"):
         return {"can_dispatch": False, "reason": "Already dispatched", "operation_key": op_key}
     return {"can_dispatch": True, "operation_key": op_key}
@@ -84,42 +103,29 @@ def commit_dispatch(state_file, journal_dir, worker_id, operation_key):
     _atomic_write(state_file, state)
     return {"committed": True, "operation_key": operation_key}
 
-def commit_blame(state_file, journal_dir, blame_key):
-    op_key = f"blame:{blame_key}"
-    _, out, _ = _tj("already-applied", journal_dir, op_key)
-    if not out.get("applied"):
-        _tj("start-phase", journal_dir, f"blame:{blame_key}")
-        _tj("complete-phase", journal_dir, f"blame:{blame_key}", op_key)
-    return {"operation_key": op_key}
+def commit_side_effect(state_file, journal_dir, kind, key, runner_func=None):
+    """
+    Generic journal-gated side effect commit.
+    If runner_func is provided, it runs BEFORE commit (reservation pattern).
+    If runner_func fails, commit is skipped.
+    Both journal and side effect are in same function — caller must handle.
+    """
+    op_key = f"{kind}:{key}"
+    _, out = _tj("already-applied", journal_dir, op_key)
+    if out.get("applied"):
+        return {"operation_key": op_key, "applied": True}
 
-def commit_merge(state_file, journal_dir, merge_key):
-    op_key = f"merge:{merge_key}"
-    _, out, _ = _tj("already-applied", journal_dir, op_key)
-    if not out.get("applied"):
-        _tj("start-phase", journal_dir, f"merge:{merge_key}")
-        _tj("complete-phase", journal_dir, f"merge:{merge_key}", op_key)
-    return {"operation_key": op_key}
+    # Run side effect first (reservation pattern)
+    if runner_func:
+        try:
+            runner_func()
+        except Exception as e:
+            return {"error": f"Side effect failed: {e}", "operation_key": op_key}
 
-def commit_provenance(state_file, journal_dir, prov_key):
-    op_key = f"provenance:{prov_key}"
-    _, out, _ = _tj("already-applied", journal_dir, op_key)
-    if not out.get("applied"):
-        _tj("start-phase", journal_dir, f"prov:{prov_key}")
-        _tj("complete-phase", journal_dir, f"prov:{prov_key}", op_key)
-    return {"operation_key": op_key}
-
-def commit_channel(state_file, journal_dir, channel):
-    op_key = f"channel:{channel}:tick-{_get_tick(state_file)}"
-    _, out, _ = _tj("already-applied", journal_dir, op_key)
-    if not out.get("applied"):
-        _tj("start-phase", journal_dir, f"channel:{channel}")
-        _tj("complete-phase", journal_dir, f"channel:{channel}", op_key)
-    return {"operation_key": op_key}
-
-def _get_tick(state_file):
-    try:
-        with open(state_file) as f: return json.load(f).get("tick", 0)
-    except: return 0
+    # Then commit operation key
+    _tj("start-phase", journal_dir, f"{kind}:{key}")
+    _tj("complete-phase", journal_dir, f"{kind}:{key}", op_key)
+    return {"operation_key": op_key, "applied": False}
 
 def tick_end(state_file, journal_dir):
     _tj("start-phase", journal_dir, "tick_end")
@@ -133,28 +139,19 @@ if __name__ == "__main__":
     if len(sys.argv) < 2: print(__doc__, file=sys.stderr); sys.exit(1)
     cmd = sys.argv[1]
     if cmd == "init":
-        if len(sys.argv) < 4: print("Usage: tick-runtime.py init <state_file> <journal_dir>"); sys.exit(1)
+        if len(sys.argv) < 4: print("Usage: tick-runtime.py init <state> <journal_dir>"); sys.exit(1)
         r = init_tick(sys.argv[2], sys.argv[3])
     elif cmd == "can-dispatch":
-        if len(sys.argv) < 5: print("Usage: tick-runtime.py can-dispatch <state> <journal_dir> <worker_id>"); sys.exit(1)
+        if len(sys.argv) < 5: print("Usage: tick-runtime.py can-dispatch <state> <journal_dir> <worker>"); sys.exit(1)
         r = can_dispatch(sys.argv[2], sys.argv[3], sys.argv[4])
     elif cmd == "commit-dispatch":
-        if len(sys.argv) < 6: print("Usage: tick-runtime.py commit-dispatch <state> <journal_dir> <worker_id> <op_key>"); sys.exit(1)
+        if len(sys.argv) < 6: print("Usage: tick-runtime.py commit-dispatch <state> <journal_dir> <worker> <op_key>"); sys.exit(1)
         r = commit_dispatch(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
-    elif cmd == "commit-blame":
-        if len(sys.argv) < 4: print("Usage: tick-runtime.py commit-blame <state> <journal_dir> <blame_key>"); sys.exit(1)
-        r = commit_blame(sys.argv[2], sys.argv[3], sys.argv[4])
-    elif cmd == "commit-merge":
-        if len(sys.argv) < 4: print("Usage: tick-runtime.py commit-merge <state> <journal_dir> <merge_key>"); sys.exit(1)
-        r = commit_merge(sys.argv[2], sys.argv[3], sys.argv[4])
-    elif cmd == "commit-provenance":
-        if len(sys.argv) < 4: print("Usage: tick-runtime.py commit-provenance <state> <journal_dir> <prov_key>"); sys.exit(1)
-        r = commit_provenance(sys.argv[2], sys.argv[3], sys.argv[4])
-    elif cmd == "commit-channel":
-        if len(sys.argv) < 5: print("Usage: tick-runtime.py commit-channel <state> <journal_dir> <channel>"); sys.exit(1)
-        r = commit_channel(sys.argv[2], sys.argv[3], sys.argv[4])
+    elif cmd == "commit-side-effect":
+        if len(sys.argv) < 6: print("Usage: tick-runtime.py commit-side-effect <state> <journal_dir> <kind> <key>"); sys.exit(1)
+        r = commit_side_effect(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
     elif cmd == "tick-end":
-        if len(sys.argv) < 4: print("Usage: tick-runtime.py tick-end <state_file> <journal_dir>"); sys.exit(1)
+        if len(sys.argv) < 4: print("Usage: tick-runtime.py tick-end <state> <journal_dir>"); sys.exit(1)
         r = tick_end(sys.argv[2], sys.argv[3])
     else:
         print(f"Unknown: {cmd}", file=sys.stderr); sys.exit(1)

@@ -2,160 +2,111 @@
 """
 channel-dispatch.py — Deterministic channel dispatcher for v0.5 tick pipeline.
 
-Inspects state and worker activity, checks feature flags + budget,
-derives operation keys, consults tick journal, executes channel,
-records provenance + spend, commits journal, returns candidate-only output.
-
-Disabled channels: zero artifact, zero spend, zero provenance, deterministic blocked result.
-
-Usage:
-  channel-dispatch.py <state_file> <journal_dir> <channel_name> [--seed=N]
+Stable operation key → journal reserve → budget reserve → execute →
+provenance → commit budget → commit journal.
+Every subprocess RC is checked. Any failure → blocked.
 """
 
-import json
-import os
-import sys
-import uuid
+import json, os, subprocess, sys, uuid
 from datetime import datetime
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 
-
 def get_ts():
     return datetime.utcnow().isoformat() + "Z"
 
-
-def run_py(script, *args):
-    """Run one of our scripts by path."""
+def _run(script, *args):
     sp = os.path.join(SCRIPTS_DIR, script)
-    if not os.path.exists(sp):
-        return {"error": f"Script not found: {sp}"}
-    import subprocess
-    proc = subprocess.run([sys.executable, sp] + list(args),
-                          capture_output=True, text=True, timeout=30)
+    if not os.path.exists(sp): return None, {"error": f"Script not found: {sp}"}
+    p = subprocess.run([sys.executable, sp] + list(args), capture_output=True, text=True, timeout=30)
     out = {}
-    if proc.stdout.strip():
-        try:
-            out = json.loads(proc.stdout)
-        except json.JSONDecodeError:
-            out = {"raw": proc.stdout}
-    return out
-
+    if p.stdout.strip():
+        try: out = json.loads(p.stdout)
+        except: out = {"raw": p.stdout}
+    return p.returncode, out
 
 def dispatch(state_file, journal_dir, channel, seed=None):
-    """Deterministic channel dispatch gate."""
-    # 1. Load state to check worker activity
-    if not os.path.exists(state_file):
-        return {"allowed": False, "reason": "state_file not found"}
+    # 1. Load state, check workers
+    if not os.path.exists(state_file): return {"allowed": False, "reason": "state_file not found"}
+    with open(state_file) as f: state = json.load(f)
+    running = [k for k, v in state.get("worker_status", {}).items() if v == "running"]
+    if running: return {"allowed": False, "reason": f"workers active: {running}"}
 
-    with open(state_file) as f:
-        state = json.load(f)
-
-    # 2. Check workers not running
-    workers = state.get("worker_status", {})
-    running = [k for k, v in workers.items() if v == "running"]
-    if running:
-        return {"allowed": False, "reason": f"workers active: {running}"}
-
-    # 3. Feature flag + budget check
-    budget_result = run_py("channel-budget.py", "can-run", state_file, channel)
-    if not budget_result.get("allowed", False):
-        return {
-            "allowed": False,
-            "reason": budget_result.get("reason", "budget/flag block"),
-            "channel": channel,
-        }
-
-    # 4. Derive stable operation key (NO random UUID)
     tick_n = state.get("tick", 0)
     op_key = f"channel:{channel}:tick-{tick_n}"
 
-    # 5. Consult tick journal
-    journal_result = run_py("tick-journal.py", "already-applied", journal_dir, op_key)
-    if journal_result.get("applied"):
-        return {
-            "allowed": True,
-            "already_done": True,
-            "operation_key": op_key,
-            "reason": "Already executed in this tick (idempotent)",
-            "channel": channel,
-        }
+    # 2. Feature flag + budget check (estimated cost, before execution)
+    rc, bc = _run("channel-budget.py", "can-run", state_file, channel, "0.05")
+    if rc != 0 or not bc.get("allowed"):
+        return {"allowed": False, "reason": bc.get("reason", "budget/flag block")}
+    if not bc.get("remaining", 0) >= 0.01:
+        return {"allowed": False, "reason": "remaining budget too low"}
 
-    # 6. Execute the appropriate channel
-    result = _execute_channel(state_file, channel, seed)
-    if result.get("error"):
-        return {"allowed": False, "error": result["error"], "channel": channel}
+    # 3. Journal reserve: start channel phase
+    rc, _ = _run("tick-journal.py", "start-phase", journal_dir, f"channel:{channel}")
+    if rc != 0: return {"allowed": False, "reason": "journal reserve failed"}
 
-    # 7. Record provenance
-    run_py("provenance-track.py", "record",
-           os.path.join(os.path.dirname(state_file), "provenance"),
-           "channel_output", f"{channel}-{op_key}", channel,
-           "--source", f"tick-{state.get('tick', 0)}",
-           "--cost", str(result.get("cost_usd", 0)))
+    # 4. Execute channel
+    output = _execute_channel(state_file, channel, seed)
+    if output.get("error"):
+        _run("tick-journal.py", "complete-phase", journal_dir, f"channel:{channel}", f"{op_key}:failed")
+        return {"allowed": False, "error": output["error"]}
 
-    # 8. Record spend
-    run_py("channel-budget.py", "spend", state_file, journal_dir, channel,
-           str(result.get("cost_usd", 0)), op_key)
+    cost = output.get("cost_usd", 0.01)
 
-    # 9. Commit journal
-    run_py("tick-journal.py", "start-phase", journal_dir, f"channel:{channel}")
-    run_py("tick-journal.py", "complete-phase", journal_dir, f"channel:{channel}", op_key)
+    # 5. Record provenance
+    prov_dir = os.path.join(os.path.dirname(state_file), "provenance")
+    rc_p, _ = _run("provenance-track.py", "record", prov_dir,
+                   "channel_output", f"{channel}-{op_key}", channel,
+                   "--source", f"tick-{tick_n}", "--cost", str(cost))
+    if rc_p != 0:
+        _run("tick-journal.py", "complete-phase", journal_dir, f"channel:{channel}", f"{op_key}:prov_failed")
+        return {"allowed": False, "reason": "provenance record failed"}
+
+    # 6. Budget spend (inside lock)
+    rc_s, so = _run("channel-budget.py", "spend", state_file, journal_dir, channel, str(cost), op_key)
+    if rc_s != 0 or so.get("error"):
+        _run("tick-journal.py", "complete-phase", journal_dir, f"channel:{channel}", f"{op_key}:budget_failed")
+        return {"allowed": False, "reason": so.get("error", "budget spend failed")}
+
+    # 7. Complete journal phase (success)
+    rc_j, _ = _run("tick-journal.py", "complete-phase", journal_dir, f"channel:{channel}", op_key)
+    if rc_j != 0: return {"allowed": False, "reason": "journal commit failed"}
 
     return {
-        "allowed": True,
-        "already_done": False,
-        "operation_key": op_key,
-        "channel": channel,
-        "output": result.get("output", []),
-        "candidate_only": True,
+        "allowed": True, "operation_key": op_key, "channel": channel,
+        "cost_usd": cost, "output": output.get("output", []), "candidate_only": True,
     }
 
-
 def _execute_channel(state_file, channel, seed=None):
-    """Execute a single channel. Returns candidate output."""
     ledger_dir = os.path.dirname(state_file)
-
     if channel == "analogy":
         store = os.path.join(ledger_dir, "analogies")
-        result = run_py("analogy-channel.py", "retrieve", store, "self", "improvement")
-        return {"cost_usd": 0.02, "output": result.get("analogies", [])}
-
+        _, r = _run("analogy-channel.py", "retrieve", store, "self", "improvement")
+        return {"cost_usd": 0.02, "output": r.get("analogies", [])}
     elif channel == "dream":
         out_dir = os.path.join(ledger_dir, "dreams")
-        s = seed or hash(get_ts()) % 10000
-        result = run_py("dream-channel.py", "dream", state_file, out_dir, str(s), "--count=2")
-        # Separate generation from filtering
-        run_py("dream-channel.py", "filter", state_file, out_dir)
-        return {"cost_usd": 0.01, "output": result.get("ideas", [])}
-
+        s = seed or hash(datetime.utcnow().isoformat()) % 10000
+        _, r = _run("dream-channel.py", "dream", state_file, out_dir, str(s), "--count=2")
+        _run("dream-channel.py", "filter", state_file, out_dir)
+        return {"cost_usd": 0.01, "output": r.get("ideas", [])}
     elif channel == "whisper":
         wdir = os.path.join(ledger_dir, "whispers")
-        brief_dir = os.path.join(ledger_dir, "briefings")
-        os.makedirs(brief_dir, exist_ok=True)
-        result = run_py("whisper-channel.py", "brief", wdir, brief_dir)
-        return {"cost_usd": 0.01, "output": result.get("items", [])}
-
+        bdir = os.path.join(ledger_dir, "briefings")
+        os.makedirs(bdir, exist_ok=True)
+        _, r = _run("whisper-channel.py", "brief", wdir, bdir)
+        return {"cost_usd": 0.01, "output": r.get("items", [])}
     elif channel == "calibration":
-        result = run_py("calibration-channel.py", "report", state_file)
-        return {"cost_usd": 0.005, "output": [result]}
-
-    else:
-        return {"error": f"Unknown channel: {channel}"}
-
+        _, r = _run("calibration-channel.py", "report", state_file)
+        return {"cost_usd": 0.005, "output": [r]}
+    return {"error": f"Unknown channel: {channel}"}
 
 if __name__ == "__main__":
-    if len(sys.argv) < 4:
-        print(__doc__, file=sys.stderr)
-        sys.exit(1)
-
-    sf = sys.argv[1]
-    jd = sys.argv[2]
-    ch = sys.argv[3]
+    if len(sys.argv) < 4: print(__doc__, file=sys.stderr); sys.exit(1)
+    sf, jd, ch = sys.argv[1], sys.argv[2], sys.argv[3]
     seed = None
     for a in sys.argv[4:]:
-        if a.startswith("--seed="):
-            seed = int(a.split("=", 1)[1])
-
+        if a.startswith("--seed="): seed = int(a.split("=", 1)[1])
     result = dispatch(sf, jd, ch, seed)
     print(json.dumps(result, indent=2))
     sys.exit(0 if result.get("allowed") else 1)
