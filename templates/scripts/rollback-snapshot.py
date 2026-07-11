@@ -29,10 +29,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 SNAPSHOT_SCHEMA_VERSION = 1
 
@@ -54,7 +52,7 @@ def _sha256(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-def capture_git_reset(candidate_id: str, tick_id: int, *, base_commit: str, diff_path: Path) -> dict:
+def capture_git_reset(*, base_commit: str, diff_path: Path) -> dict:
     """Code: capture the base commit and an inverse patch."""
     inverse = diff_path.read_bytes() if diff_path.exists() else b""
     return {
@@ -66,7 +64,7 @@ def capture_git_reset(candidate_id: str, tick_id: int, *, base_commit: str, diff
     }
 
 
-def capture_yaml_restore(candidate_id: str, tick_id: int, *, yaml_path: Path, line_range: tuple[int, int]) -> dict:
+def capture_yaml_restore(*, yaml_path: Path, line_range: tuple[int, int]) -> dict:
     """Config: capture the original line range."""
     original = b""
     if yaml_path.exists():
@@ -82,7 +80,7 @@ def capture_yaml_restore(candidate_id: str, tick_id: int, *, yaml_path: Path, li
     }
 
 
-def capture_schema_down(candidate_id: str, tick_id: int, *, current_version: int, down_migration: str) -> dict:
+def capture_schema_down(*, current_version: int, down_migration: str) -> dict:
     """DB: capture the current schema version + down migration reference."""
     return {
         "strategy": "schema_down",
@@ -92,7 +90,7 @@ def capture_schema_down(candidate_id: str, tick_id: int, *, current_version: int
     }
 
 
-def capture_journal_revert(candidate_id: str, tick_id: int, *, journal_path: Path, entry_range: tuple[int, int]) -> dict:
+def capture_journal_revert(*, journal_path: Path, entry_range: tuple[int, int]) -> dict:
     """Belief: capture the journal entry range for revert."""
     entries = b""
     if journal_path.exists():
