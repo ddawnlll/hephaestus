@@ -27,7 +27,6 @@ All 10 issue scenarios plus:
 Uses isolated temporary ledgers and golden final-state snapshots.
 """
 import json
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -160,10 +159,3 @@ class TestDeadlockSibling(unittest.TestCase):
                          f"rebased must be REBASE_REQUIRED, got {rebased_result}")
         self.assertNotEqual(sibling_result["state"], "DEAD",
                             f"sibling must not deadlock, got {sibling_result}")
-
-
-def _load_legacy_suite():
-    """Stub for the v0.5 10-scenario suite; in CI, the existing
-    test_phase*_containment.py files cover those scenarios. This
-    file is the v0.6 BE-7 (#88) extension point."""
-    return unittest.TestSuite()
