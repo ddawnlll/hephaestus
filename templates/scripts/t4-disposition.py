@@ -23,10 +23,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
 
 
 class Route(str, Enum):
