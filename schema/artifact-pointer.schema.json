@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://hephaestus.dev/schema/artifact-pointer.schema.json",
+  "title": "Hephaestus v0.6 Artifact Pointer",
+  "description": "Pointer convention for large evidence artifacts (test logs, checkpoints, datasets, diffs, snapshots) that should NOT live in Postgres rows. The pointer lives in DB; the bytes live in object storage. From DL-3 (#96).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_uri",
+    "hash",
+    "size",
+    "mime_type",
+    "producer",
+    "evidence_status"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "description": "Schema version number."
+    },
+    "artifact_uri": {
+      "type": "string",
+      "description": "Storage URI. Format depends on the storage backend: 's3://<bucket>/<key>' for S3-compatible, 'file://<abs_path>' for filesystem. Resolved by the storage adapter (templates/scripts/artifact_store.py).",
+      "pattern": "^(s3|file)://.+"
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "SHA-256 hash of the artifact bytes, prefixed with the algorithm. Verified on read."
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Size in bytes. Verified on read (storage adapter compares the actual byte count to this value)."
+    },
+    "mime_type": {
+      "type": "string",
+      "description": "IANA media type, e.g. 'application/json', 'text/plain', 'application/x-tar'."
+    },
+    "producer": {
+      "type": "string",
+      "description": "Identity that produced the artifact. Format: '<role>:<tick_id>' or '<role>:<candidate_id>'. Examples: 'worker:12345', 'rollback-snapshot:cand_abc_123'."
+    },
+    "evidence_status": {
+      "type": "string",
+      "enum": ["PENDING", "VERIFIED", "QUARANTINED", "REVOKED"],
+      "description": "Lifecycle state of the artifact as evidence. PENDING: written, hash not yet verified. VERIFIED: hash + size match, content is canonical. QUARANTINED: hash mismatch or producer anomaly; held aside, not loaded. REVOKED: explicitly invalidated (e.g. evidence for a failed candidate)."
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 timestamp of capture. Set by the producer; not modified thereafter."
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Optional. If set, the artifact is garbage-collected after this time. Default retention: 7 days for snapshots, indefinite for precedent memory."
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Free-form metadata. Producer-defined. Common keys: 'candidate_id', 'tick_id', 'phase', 'schema_version'.",
+      "additionalProperties": true
+    }
+  }
+}
