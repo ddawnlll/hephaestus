@@ -20,8 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 DEFAULT_MAX_PROMOTIONS = 10
@@ -105,7 +104,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
     return 0 if result["verdict"] == "ALLOWED" else 1
 
 
-def _cmd_reset(args: argparse.Namespace) -> int:
+def _cmd_reset(_: argparse.Namespace) -> int:
     state = reset(BudgetState())
     print(json.dumps(state.to_dict()))
     return 0
