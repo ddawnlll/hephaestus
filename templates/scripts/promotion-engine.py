@@ -28,10 +28,8 @@ matches) or rolled back (if not). The engine never double-promotes.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
-import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
