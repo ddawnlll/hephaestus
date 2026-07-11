@@ -8,7 +8,7 @@ All projects share the **same Hermes instance** with unique namespacing.
 
 > Formerly `hermes-pack`. Renamed to Hephaestus — the forge/automaton god — to give this
 > orchestration+verification layer its own identity, separate from the Hermes Agent runtime
-> it bootstraps. See [milestone v0.4](https://github.com/ddawnlll/hephaestus/milestone/5).
+> it bootstraps. See the [v0.5 Kaizen Engine release](https://github.com/ddawnlll/hephaestus/releases/tag/v0.5.0-kaizen).
 
 ## Architecture
 
@@ -17,11 +17,24 @@ hephaestus/
   install.sh               # One-liner curl installer
   bootstrap.sh             # Bash bootstrap (zero deps) — orchestrator mode
   bootstrap.ts             # TypeScript bootstrap (Bun)
-  templates/               # Generic template files (SOULs, configs, prompts)
+  templates/               # Generic template files (SOULs, configs, prompts, scripts)
+    SOUL.{orchestrator,redteam,worker,challenger,arbiter,reflector}.md
+    beliefs.yaml           # Narrow, capacity-limited belief workspace (GWT analog)
+    scripts/               # Deterministic gates + channel dispatchers
+      tick-gate.sh, tick-runtime.py, tick-journal.py
+      containment-engine.py, blame-propagation.py, feature-flags.py
+      channel-{budget,dispatch}.py, channel-{analogy,dream,whisper,calibration}.py
+      reflector-dispatch.sh, prereg-lock.py, self-grade-diff.py
+      readiness-check.py, provenance-track.py
+    prompts/tick.md        # Orchestrator tick prompt (all phases)
   adapters/                # Project-specific adapters
-    v7-alphaforge/         # V7/AlphaForge adapter (orchestrator mode)
+    v7-alphaforge/         # V7/AlphaForge adapter (orchestrator mode) — uses Reflector
     designforge/           # DesignForge adapter (custom mode)
     money-radar/           # Money Radar stub (custom mode, coming soon)
+  schema/                  # Versioned JSON Schemas (state, control, goal, ideas, events,
+                           # beliefs, hypothesis, provenance)
+  schema/tests/            # Deterministic test suite — 191 tests, all pass
+  .praxis/                 # Praxis Truth Kernel — plan specs + evidence ledger
 ```
 
 ### Two setup modes
@@ -355,26 +368,20 @@ Then configure Hermes profiles to point to `http://localhost:4000` (the default 
 - **Sequential fallback.** On primary provider failure, the chain drops to the next model automatically.
 - **Local last resort.** Every chain ends with a local Ollama/LM Studio model.
 
-## v0.4 — Adversarial Council (Hephaestus)
+## v0.5 — Kaizen Engine (Hephaestus)
 
-> **Status: design/roadmap.** Everything in this section is specified but **not yet implemented** —
-> tracked in [milestone v0.4](https://github.com/ddawnlll/hephaestus/milestone/5), issues
-> [#21–#32](https://github.com/ddawnlll/hephaestus/issues?q=milestone%3A%22v0.4%20%E2%80%94%20Adversarial%20Council%20(Hephaestus)%22).
-> Do not assume any of this runs today — the existing Praxis + T1/T2/T3 flow described above is
-> the only part that's real.
+> **Status: shipped in v0.5.0-kaizen** (PR [#73](https://github.com/ddawnlll/hephaestus/pull/73)).
+> All issues #52–#72 closed. 191 tests pass. Praxis evidence bundle recorded at
+> `.praxis/runs/v05-full-evidence.jsonl`. See [release notes](https://github.com/ddawnlll/hephaestus/releases/tag/v0.5.0-kaizen).
 
-The core problem this milestone addresses: the existing verification stack judges *one worker's
-evidence bundle at a time*, and the orchestrator both proposes (T1) and merges — a conflict of
-interest. Nothing red-teams the strategy, the goal, or the spend; nothing distinguishes "explore
-freely" from "prove ruthlessly."
-
-**Janus** — the two-faced role that fixes this, sitting outside the per-evidence tier system.
-Full request/response flow, end to end:
+The **Kaizen Engine** turns the loop into a self-improving system by adding a third face
+(Reflector), a belief workspace (Global Workspace analog), containment for new deadlock
+modes, and four idea channels that supply diversity at volume. The org chart, end to end:
 
 ```
                         ┌───────────────────────────┐
                         │   HUMAN  (T4)             │  ← only disputes +
-                        │   final arbiter / veto    │    Red Team blocking escalation
+                        │   final arbiter / veto    │    Red-Team blocking escalation
                         └─────────────┬─────────────┘
                                       │ (disputes only)
         control.yaml ┌────────────────┴────────────────┐ goal.yaml
@@ -384,59 +391,145 @@ Full request/response flow, end to end:
    ║ EXPLORER  ║──►│                               │    │
    ║ divergence║   │        ORCHESTRATOR           │    │
    ║           ║   │     (commander / hub)         │    │
-   ║ "what if?"║   │  dispatch • decide • merge    │    │
-   ║ no veto   ║   └───┬───────────────────────▲───┘    │
-   ╚═════▲═════╝       │ dispatch               │ verdict│
-         │             ▼                        │        │
-         │        ┌─────────┐  evidence   ┌─────┴──────┐ │
-         │        │ WORKERS │────────────►│  PRAXIS    │ │
-         │        │ (N)     │  bundle     │ 6 gates    │ │
-         │        │ execute │             │ determ.    │ │
-         │        └─────────┘             │ FAIL=hard  │ │
-         │                                └─────┬──────┘ │
-         │                                 PASS │        │
-         │                                      ▼        │
-         │                            ┌──────────────┐   │
-         │                            │ T1→T2→T3     │   │  per-evidence
-         │                            │ LLM gates    │   │  judgment (existing)
-         │                            │ (blind/diff) │   │
-         │                            └──────┬───────┘   │
-         │                            tier verdict │     │
-         │                                   ▼           │
-         │                        ╔══════════════════╗   │
-         │   objections.jsonl     ║   RED TEAM       ║───┘ ratchet.json
-         └────────────────────────║   convergence    ║   (raises the bar)
-            "don't re-propose      ║ strategy-adversary║
-             this dead hypothesis" ║ VETO + ratchet   ║
-                                   ║ no merge          ║
-                                   ╚════════╤═════════╝
-                                            │
-                                 BLOCK ◄────┼────► CONCEDE
-                                    │              │
-                          escalate to      Orchestrator MERGEs
-                          T4 Human         → writes to Hindsight memory (PASS)
+   ║ "what if? "║   │  dispatch • propose          │    │
+   ║ no veto   ║   │  no merge (→ T3)              │    │
+   ╚═════▲═════╝   └───┬───────────────────────▲───┘    │
+         │             │ dispatch               │ verdict│
+   channels:            ▼                        │        │
+   ┌──────────┐   ┌─────────┐  evidence   ┌─────┴──────┐ │
+   │ ANALOGY  │   │ WORKERS │────────────►│  PRAXIS    │ │
+   │ DREAM    │   │ (N)     │  bundle     │ 6 gates    │ │
+   │ WHISPER  │   │ execute │             │ determ.    │ │
+   │ CALIBR.  │   └─────────┘             │ FAIL=hard  │ │
+   └────┬─────┘                           └─────┬──────┘ │
+        │ candidates only                PASS │        │
+        │ (never bypass hypothesis)            ▼        │
+        │                              ┌──────────────┐   │
+        │                              │ T1→T2→T3     │   │  per-evidence
+        │                              │ LLM gates    │   │  judgment
+        │                              └──────┬───────┘   │
+        │                              tier verdict │     │
+        │                                     ▼           │
+        │ objections.jsonl    ╔══════════════════╗       │
+        └──────────────────────║   RED TEAM       ║───────┘ ratchet.json
+           "don't re-propose   ║   convergence    ║  (raises the bar)
+            this dead hyp."    ║ strategy-adversary║
+                              ║ VETO + ratchet   ║
+                              ║ no merge          ║
+                              ╚════════╤═════════╝
+                                       │
+                            BLOCK ◄────┼────► CONCEDE
+                               │              │
+                     escalate to T3     Orchestrator MERGEs
+                       Arbiter      → writes to Hindsight memory
+
+   ┌──────────────────────────────────────────────────────────────┐
+   │              BELIEF WORKSPACE (beliefs.yaml)                 │
+   │   HARD CAP 12 active beliefs. Every entry has a              │
+   │   kill_criterion (falsifiability contract). Single-writer:   │
+   │   Reflector only. Capacity competition for entry.            │
+   └──────────────────────────────────────────────────────────────┘
+                                ▲
+                                │ consolidation runs (idle / plateau)
+                                │
+                         ┌──────┴──────┐
+                         │  REFLECTOR  │  explain/ · consolidate
+                         │  (decorrel.)│  • shared-assumption extraction
+                         │  writes:    │  • relaxation probe
+                         │   beliefs,  │  • perspective tour
+                         │   narrative │  may mark ≤ 1 belief suspect/run
+                         └─────────────┘
 ```
 
-- **Explorer** ([#25](https://github.com/ddawnlll/hephaestus/issues/25)) — upstream feeder, zero veto/merge authority, triggered on idle capacity, not every tick. Complements the existing Ideas Engine anti-collapse work (#11).
-- **Red Team** ([#24](https://github.com/ddawnlll/hephaestus/issues/24), persona already drafted in `templates/SOUL.redteam.md`) — a conditional meta-gate *above* T1/T2/T3, not a 4th permanent judge. Every objection must carry a `retraction_criterion` (falsifiability contract) — an objection with no stated way to be satisfied is invalid. Persistent scar-tissue memory (`objections.jsonl`, [#23](https://github.com/ddawnlll/hephaestus/issues/23)) blocks re-litigating refuted hypotheses.
-- **Decorrelation is load-bearing** ([#22](https://github.com/ddawnlll/hephaestus/issues/22)): the current fallback chains let challenger and worker collapse to the same base model, making "independent verification" theater. Every judge role must come from a distinct model family.
-- **Merge authority moves to Arbiter (T3)** ([#21](https://github.com/ddawnlll/hephaestus/issues/21)) — the orchestrator no longer grades its own homework.
+### What ships in v0.5
 
-**Three \$0 deterministic gates** (no LLM — the same philosophy as Praxis, applied to strategy-layer rigor instead of per-bundle evidence):
+**Phase 0 — debt cleared** (issues #52–#55):
+- `SOUL.challenger.md` (T2, read-only, blind, decorrelated model) and `SOUL.arbiter.md`
+  (T3, raw-evidence-only, binding merge/reject) — personas + bootstrap wiring.
+- `self-grade-diff.py` and `prereg-lock.py` — the two orphan gates implemented; tests moved
+  out of `tests_tmp/` into `schema/tests/`. `.gitignore` tripwires added for `C:Users*` and
+  `C:/` Windows path artifacts.
 
-| Gate | Blocks | Issue |
-|------|--------|-------|
-| Pre-registration lock | metric/threshold changed after seeing results (p-hacking) | [#27](https://github.com/ddawnlll/hephaestus/issues/27) |
-| Self-grade diff | orchestrator verdict more optimistic than raw evidence allows | [#28](https://github.com/ddawnlll/hephaestus/issues/28) |
-| ROI / exploitation-throttle | re-mining a refuted hypothesis family — **never** throttles novel exploration | [#29](https://github.com/ddawnlll/hephaestus/issues/29) |
+**Phase 1 — Belief workspace + Reflector** (#56–#60):
+- `schema/beliefs.schema.json` — capacity cap 12, mandatory `kill_criterion` (falsifiability
+  contract), `blamed_by` blame tracking, `historical_beliefs[]` for evicted/refuted entries.
+- `relies_on` field on hypotheses — when a hypothesis FAILs, blame propagates upward to every
+  belief it relied on. Three failures on B-X → B-X becomes a *suspect* — this is the mechanism
+  that produces "grow the dataset" without ever enumerating axes in config.
+- `narrative.md` — one-page project story, rewritten (not appended) by Reflector each run.
+- `SOUL.reflector.md` + `reflector-dispatch.sh` — shared-assumption extraction, relaxation
+  probe, perspective tour. **Decorrelated model family** from orchestrator (else self-grading
+  theater). Runs offline (idle / plateau), never writes code.
+- Stagnation/momentum signals in `state.json`; SOUL hard rule: while a `suspect` belief
+  exists, no new hypotheses inside that frame — either test the belief or file to T3.
 
-**Curiosity budget** ([#30](https://github.com/ddawnlll/hephaestus/issues/30)) — a protected slice of daily spend (floor 20%) that no gate above may throttle. The guiding principle: gates constrain *claims*, never *curiosity*.
+**Phase 2 — Containment** (#61–#64):
+- `authority-matrix.yaml` — terminal referee for every role pair (no referee sits in a pair
+  it is party to; every blocking state has a timeout + safe-default HOLD).
+- `suspect TTL` — `suspect` expires after N ticks (default 5); Reflector must re-justify.
+- `curiosity exemption` — belief-test hypotheses run from the protected curiosity budget;
+  Red Team blocks MERGE of result, never the RUN of the experiment.
+- `belief min-residency` (M ticks, default 3) + evidence-backed eviction audit log.
+- `frame-shift cooldown` (K ticks, default 8) + ratchet hysteresis (max one notch per
+  R-window; direction reversal requires a window of evidence, not a single reading).
 
-**Escalation policy + AFK mode** ([#31](https://github.com/ddawnlll/hephaestus/issues/31)) — T4 (human) is the rarest, most expensive path; disputes should die at Arbiter/Red Team almost always. Critically: **when no human is available, the system never waits on T4.** Human-required work is parked with a safe default of HOLD (never auto-merge something critical), and the loop keeps working on other hypotheses. The existing `human_gate_pending>72h` hard-stop in `goal.yaml` is being removed for exactly this reason — a global stall is worse than a parked decision.
+**Phase 3 — Idea channels** (#65–#68):
+- **Analogy** — `~/.hermes/lessons.jsonl` cross-project corpus with dual writing (concrete
+  + denominalized abstract). Casting sessions force-fit top-5 abstract lessons from OTHER
+  projects; survivors become hypotheses tagged `provenance: analogy`.
+- **Random-leap** — bisociation replay (sample ledger pairs at MID embedding distance),
+  dream mode (seeded entropy, generation/filtering separated by sleep cycle), and one
+  random arXiv/HN item per day for external entropy.
+- **Affect** — calibration (Brier scores; confidently-wrong is costly, agreement is NOT
+  rewarded), mood as parameter modulation (never decision gating), boredom → family
+  rotation (interleaving).
+- **Context** — `whispers/` inbox (unstructured human impressions, 30s, weakest evidence),
+  morning briefing, regime detector. Security: every external stream must earn workspace
+  entry through capacity + competition; no external writes to `beliefs.yaml` directly.
+- All channels are **independently feature-flagged, default disabled, separate daily
+  budgets, candidate-only output**. Disabled = zero spend, zero artifacts.
+
+**Phase 4 — Provenance + measurement** (#69): every hypothesis + merge carries a
+`provenance` tag (`elimination | analogy | replay | whisper | external | relaxation`).
+Reports aggregate per-channel hit rates. A merge without provenance fails schema validation.
+
+**Phase 5 — Runtime reliability** (#70, #71, #72):
+- `feature-flags.py` — gradual rollout with safe defaults (shadow mode, zero execution
+  for disabled flags). Active mode blocked until `readiness-check.py` passes.
+- `tick-journal.py` — durable transaction journal with atomic write-and-rename, phase
+  tracking, operation-key idempotency, stale-lock recovery, integrity checking. Proves
+  idempotent across worker dispatch, blame propagation, merges, lessons, provenance,
+  spend accounting, channel output, and reflector consolidation.
+- `channel-budget.py` — atomic daily idempotent accounting with file locking, stable
+  operation keys (no UUID), and UTC reset.
+- **Canary suite** — 11 end-to-end scenarios covering belief capacity 12/13, TTL expiry,
+  direct blame, authority coverage failure, ratchet restart, prompt-injection isolation,
+  disabled-channel zero side effects, deadlock recovery, eviction, reflector shadow
+  isolation, duplicate-tick idempotency, and crash recovery.
+- `tick-runtime.py` deterministic wrapper with journal phase transitions; `tick-gate.sh`
+  calls `tick-runtime.py init` as mandatory pre-tick hook.
+- `.github/workflows/v05-ci.yml` — full test matrix, real bootstrap dry-runs, budget,
+  journal, and interlock tests on every PR.
+
+### Invariants (enforced by tests)
+
+- 191 tests pass across `schema/tests/` (41 correction + 19 canary + 131 legacy).
+- A merge without `provenance` fails schema validation.
+- `bootstrap.sh` bash syntax verified (`bash -n` clean).
+- Disabled channel = `0` USD spend, `0` artifacts, `0` proposals.
+- Reflector writes only `beliefs.yaml` and `narrative.md` — never code, never hypotheses.
+- Authority matrix covers all role pairs; new profiles fail bootstrap without a matrix entry.
+
+### Migration from v0.4
+
+`migrate-ledger.sh` converts v1 hypothesis files (empty `relies_on`) into v0.5 schema.
+The `relies_on` field is required on all new hypotheses from this release forward.
 
 ## Known limitations
 
-- Provider/model names are configured in the adapter but not validated at bootstrap time.
-- The tick gate (`templates/scripts/tick-gate.sh`) is a shell script — Hermes cron requires `.sh` for the `--script` flag.
-- Hermes CLI flags (`--script`, `--deliver`, `--workdir`) confirmed working with Hermes v0.18.0+.
-- **v0.4 (Hephaestus adversarial council) is design-only as of this writing** — see the section above. Nothing under "Janus", "Red Team", "Explorer", or the three $0 gates is wired into `bootstrap.sh`/`bootstrap.ts` yet.
+- Reflector active mode requires readiness check + containment verified; default is
+  shadow mode (writes `reflector_proposals.yaml`, never touches `beliefs.yaml`).
+- Channel dispatch is wired in the tick prompt; deterministic channel-dispatch scripting
+  (pre-commit hooks, cron-side enforcement) is a hardening opportunity.
+- `bootstrap.sh` registry update uses a Python heredoc — bash `bash -n` passes, but
+  prefer `bootstrap.ts` (Bun) for new adapter work.
