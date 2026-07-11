@@ -6,6 +6,7 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
+    "schema_version",
     "id",
     "source_hypothesis",
     "workspace",
@@ -21,6 +22,10 @@
     "status"
   ],
   "properties": {
+    "schema_version": {
+      "type": "integer",
+      "description": "Schema version number. Bumped on breaking changes per README schema-bump procedure."
+    },
     "id": {
       "type": "string",
       "pattern": "^cand_[a-z0-9_]{4,}$",
